@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rtk ls *)",
+      "Bash(tee /tmp/mgh-demo-start.txt)",
+      "Bash(npm --version)",
+      "Bash(docker --version)",
+      "Bash(docker compose *)",
+      "Bash(rtk npx *)",
+      "Bash(mv /Users/takeshiohno/local_dev/mgh-demo/HOW.md /tmp/mgh-demo-HOW.md)",
+      "Bash(mv /Users/takeshiohno/local_dev/mgh-demo/SPEC.md /tmp/mgh-demo-SPEC.md)",
+      "Bash(mv /tmp/mgh-demo-HOW.md /Users/takeshiohno/local_dev/mgh-demo/HOW.md)",
+      "Bash(mv /tmp/mgh-demo-SPEC.md /Users/takeshiohno/local_dev/mgh-demo/SPEC.md)",
+      "Bash(rtk read *)",
+      "Bash(npm i *)",
+      "Bash(rtk prisma *)",
+      "Bash(command -v rtk)",
+      "Bash(rtk proxy *)",
+      "WebFetch(domain:pris.ly)",
+      "WebFetch(domain:www.prisma.io)",
+      "WebSearch",
+      "Bash(npm install *)",
+      "Bash(rtk find *)",
+      "Bash(rtk docker *)",
+      "Bash(HOST_PORT=3001 docker compose up -d)",
+      "Bash(rtk curl *)",
+      "Bash(rtk grep *)",
+      "Bash(tee /tmp/mgh-demo-end.txt)",
+      "Read(//private/tmp/**)",
+      "Read(//tmp/**)",
+      "Bash(HOST_PORT=3001 docker compose up -d --build)",
+      "Bash(git -C /Users/takeshiohno/local_dev/mgh-demo remote -v)",
+      "Bash(rtk git *)",
+      "Bash(git mv *)"
+    ]
+  }
+}
