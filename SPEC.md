@@ -21,7 +21,92 @@ Claude Code によるライブデモを想定し、**5〜10分で `docker compos
 ### バージョン指定
 - Node.js: `20-alpine`（Dockerベースイメージ）
 - Next.js: `^16.0.0`
-- Prisma: `^6.0.0`（最新stable）
+- Prisma: `^7.0.0`（**Prisma 7 系** ― driver adapter 必須・破壊的変更あり。後述「2.1 Prisma 7 セットアップ要点」を必ず参照）
+
+---
+
+## 2.1 Prisma 7 セットアップ要点（時短のため必読）
+
+Prisma 7 は 6 系から大きく変わっており、`SPEC.md` に従って最短経路で実装するためには以下のルールを **最初から** 守ること。これを知らずに進めると 30 分以上ハマる。
+
+### 必須インストール（initial install で全て入れる）
+```bash
+# devDependencies
+npm i -D prisma tsx @types/better-sqlite3
+# dependencies
+npm i @prisma/client @prisma/adapter-better-sqlite3 better-sqlite3 dotenv
+```
+- **`@prisma/adapter-better-sqlite3` と `better-sqlite3` は必須**（Prisma 7 では Rust エンジンが廃止され、driver adapter 方式が標準）
+- `tsx` は `prisma db seed` の実行に使う
+
+### `prisma/schema.prisma`
+```prisma
+generator client {
+  provider = "prisma-client"          // ← "prisma-client-js" ではない
+  output   = "../generated/prisma"    // ← app/ 配下は Next.js のルーティングと衝突する恐れがあるので避ける
+}
+
+datasource db {
+  provider = "sqlite"
+  // url = env("DATABASE_URL")  ← Prisma 7 では schema 内に書けない！ prisma.config.ts に書く
+}
+```
+
+### `prisma.config.ts`（プロジェクトルート、Prisma 7 で必須）
+```ts
+import "dotenv/config";
+import { defineConfig } from "prisma/config";
+
+export default defineConfig({
+  schema: "prisma/schema.prisma",
+  migrations: {
+    path: "prisma/migrations",
+    seed: "tsx prisma/seed.ts",     // ← seed コマンドはここで指定（package.json の prisma.seed は不可）
+  },
+  datasource: {
+    url: process.env["DATABASE_URL"],
+  },
+});
+```
+
+### `.env`
+```bash
+DATABASE_URL="file:./prisma/dev.db"
+```
+- ファイルパスはプロジェクトルートからの相対パス。`file:./dev.db` だとルート直下に作られて SPEC ディレクトリ構造から外れる。
+
+### `lib/prisma.ts`
+```ts
+import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
+import { PrismaClient } from "@/generated/prisma/client";  // ← @prisma/client ではなく生成先
+
+const globalForPrisma = globalThis as unknown as { prisma?: PrismaClient };
+
+function createPrisma() {
+  const adapter = new PrismaBetterSqlite3({
+    url: process.env.DATABASE_URL ?? "file:./prisma/dev.db",
+  });
+  return new PrismaClient({ adapter });
+}
+
+export const prisma = globalForPrisma.prisma ?? createPrisma();
+if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
+```
+- クラス名は **`PrismaBetterSqlite3`**（`SQLite3` ではなく `Sqlite3`、小文字 `qlite`）
+
+### マイグレ＆生成（順序重要）
+```bash
+npx prisma migrate dev --name init
+npx prisma generate          # ← migrate dev だけでは generated/prisma が作られない場合がある。明示実行が確実
+npx prisma db seed
+```
+
+### `.gitignore` 追記
+```
+/generated
+/prisma/dev.db
+/prisma/dev.db-journal
+```
 
 ---
 
@@ -113,24 +198,30 @@ enum Status {
 .
 ├── docker-compose.yml
 ├── Dockerfile
+├── .dockerignore
 ├── package.json
 ├── tsconfig.json
 ├── next.config.ts
+├── prisma.config.ts          // Prisma 7 のため必須（DATABASE_URL とseed定義）
+├── .env                      // DATABASE_URL="file:./prisma/dev.db"
 ├── prisma/
 │   ├── schema.prisma
-│   ├── seed.ts              // サンプルデータ3〜5件
-│   └── dev.db               // (gitignore)
+│   ├── seed.ts               // サンプルデータ3件
+│   └── dev.db                // (gitignore)
+├── generated/                // (gitignore) Prisma 7 生成物の出力先
+│   └── prisma/
 ├── lib/
-│   ├── prisma.ts            // PrismaClient シングルトン
-│   └── status.ts            // ステータスの日本語ラベル
+│   ├── prisma.ts             // PrismaClient シングルトン (driver adapter 経由)
+│   └── status.ts             // ステータスの日本語ラベル
 ├── app/
 │   ├── layout.tsx
-│   ├── page.tsx             // カンバンページ（Server Component）
-│   ├── actions.ts           // Server Actions (create/update/delete)
+│   ├── page.tsx              // カンバンページ（Server Component）
+│   ├── actions.ts            // Server Actions (create/update/delete)
+│   ├── globals.css           // ダークモード分岐は削除（5章「配色」参照）
 │   └── components/
 │       ├── KanbanBoard.tsx
-│       ├── TodoCard.tsx     // Client Component
-│       └── NewTodoModal.tsx // Client Component
+│       ├── TodoCard.tsx      // Client Component
+│       └── NewTodoModal.tsx  // Client Component
 ```
 
 ---
@@ -139,20 +230,26 @@ enum Status {
 
 ### `Dockerfile`
 - ベース：`node:20-alpine`
+- **`apk add --no-cache python3 make g++ libc6-compat` を追加**（`better-sqlite3` がネイティブビルドを必要とするため、これが無いと `npm install` で失敗する）
 - ワークディレクトリ：`/app`
-- `npm install` → `npx prisma generate` → `npx prisma migrate deploy` → `npm run dev`
+- `npm install` → `npx prisma generate` → `npx prisma migrate deploy` → `npm run dev -- -H 0.0.0.0`
 - ポート：3000
 
 ### `docker-compose.yml`
 - サービス：`web` のみ（DBは SQLite ファイルなので不要）
 - ボリューム：`./prisma/dev.db` をホストにマウント（データ永続化）
-- コマンド：起動時に `prisma migrate deploy` → `prisma db seed` → `next dev`
+- コマンド：起動時に `prisma migrate deploy` → `prisma db seed` → `next dev -H 0.0.0.0`
+- **ポート公開は `${HOST_PORT:-3000}:3000` の形にする**（他プロジェクトのコンテナが 3000 を使っている場合、`HOST_PORT=3001 docker compose up` で回避できるようにするため）
+
+### `.dockerignore`
+最低限：`node_modules`, `.next`, `.git`, `generated`, `README.md`, `HOW.md`, `SPEC.md`
 
 ### 起動コマンド（デモのゴール）
 ```bash
 docker compose up
 ```
 ブラウザで `http://localhost:3000` を開くとカンバンが表示され、シードデータ3件が見える。
+ポート競合時は `HOST_PORT=3001 docker compose up` で `http://localhost:3001`。
 
 ---
 
@@ -195,15 +292,44 @@ docker compose up
 
 ## 12. Claude Code への指示（実行順）
 
-このSPEC.mdを読んだ後、以下の順で進めること：
+このSPEC.mdを読んだ後、以下の順で進めること。**「2.1 Prisma 7 セットアップ要点」「5章 配色」「8章 Docker構成」を先に読み、最初から正しい構成で書く** ことが時短の鍵。
 
-1. `npx create-next-app@latest . --typescript --tailwind --app --no-src-dir --no-eslint --import-alias "@/*"` でひな型を作成
-2. Prisma 導入：`npm i -D prisma` / `npm i @prisma/client` / `npx prisma init --datasource-provider sqlite`
-3. `schema.prisma` を本SPECの内容で上書き → `npx prisma migrate dev --name init`
-4. `lib/prisma.ts`、`lib/status.ts`、`prisma/seed.ts` を作成
-5. `app/actions.ts` に Server Actions を実装
-6. `app/page.tsx` と `app/components/*` を実装
-7. `Dockerfile` と `docker-compose.yml` を作成
-8. `docker compose up` で動作確認
+1. **既存ファイル退避**：作業ディレクトリに `SPEC.md` / `HOW.md` がある場合は `create-next-app` が "directory not empty" で失敗するため、`/tmp` に一時退避してから作成・後で戻す。
+
+2. **ひな型生成**：
+   ```bash
+   npx create-next-app@latest . --typescript --tailwind --app --no-src-dir --no-eslint --import-alias "@/*" --use-npm --yes
+   ```
+
+3. **依存パッケージ一括インストール**（「2.1」のコマンドをそのまま実行）。
+
+4. **Prisma 設定ファイルを直接書く**（`prisma init` は使わなくてよい。雛形は「2.1」のとおり）：
+   - `prisma/schema.prisma`（datasource に `url` を書かない）
+   - `prisma.config.ts`（DATABASE_URL は process.env から、seed は `tsx prisma/seed.ts`）
+   - `.env`（`DATABASE_URL="file:./prisma/dev.db"`）
+   - `prisma/seed.ts`（シードデータ3件）
+
+5. **マイグレ → 生成 → シード**（順序重要）：
+   ```bash
+   npx prisma migrate dev --name init
+   npx prisma generate          # 明示実行（必須）
+   npx prisma db seed
+   ```
+
+6. **アプリコード作成**（順序は何でもよいが、すべて1回で書ききる）：
+   - `lib/prisma.ts`、`lib/status.ts`
+   - `app/actions.ts`（Server Actions）
+   - `app/page.tsx`（Server Component）
+   - `app/components/{KanbanBoard,TodoCard,NewTodoModal}.tsx`
+   - `app/layout.tsx`（lang="ja"、`bg-slate-50 text-slate-900` を body に明示）
+   - `app/globals.css` から `@media (prefers-color-scheme: dark)` ブロックを **削除**（5章「配色」参照）
+
+7. **Docker 構成作成**：`Dockerfile`（`apk add python3 make g++ libc6-compat` を含む）、`docker-compose.yml`（`HOST_PORT` 環境変数化）、`.dockerignore`。
+
+8. **起動確認**：
+   ```bash
+   docker compose up -d --build
+   curl -sS http://localhost:3000/   # ポート競合時は HOST_PORT=3001 で起動して 3001 を叩く
+   ```
 
 **各ステップで都度ターミナルへの出力を確認し、エラーが出たら次に進む前に解決すること。**
