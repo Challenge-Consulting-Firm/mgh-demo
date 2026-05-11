@@ -31,7 +31,13 @@
       "Bash(HOST_PORT=3001 docker compose up -d --build)",
       "Bash(git -C /Users/takeshiohno/local_dev/mgh-demo remote -v)",
       "Bash(rtk git *)",
-      "Bash(git mv *)"
+      "Bash(git mv *)",
+      "Bash(mv SPEC.md HOW.md /tmp/)",
+      "Bash(mv /tmp/SPEC.md /tmp/HOW.md .)",
+      "Bash(/opt/homebrew/bin/npx prisma *)",
+      "Bash(rtk wc *)",
+      "Bash(kill %1)",
+      "Bash(pkill -f \"next dev\")"
     ]
   }
 }
