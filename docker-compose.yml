@@ -1,0 +1,10 @@
+services:
+  web:
+    build: .
+    ports:
+      - "${HOST_PORT:-3001}:3000"
+    volumes:
+      - ./prisma:/app/prisma
+    environment:
+      - DATABASE_URL=file:./prisma/dev.db
+      - NODE_ENV=development
