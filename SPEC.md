@@ -101,13 +101,19 @@ npx prisma generate          # ← migrate dev だけでは generated/prisma が
 npx prisma db seed
 ```
 
-> ⚠️ **`rtk` プロキシ環境での注意**：`rtk npx prisma db seed` は `tsx prisma/seed.ts` を内部で起動する過程で `No such file or directory (os error 2)` を出すケースが確認されている。**`prisma db seed` だけは `rtk` を経由せず `/opt/homebrew/bin/npx prisma db seed`（または素の `npx`）で叩くこと**。`migrate dev` と `generate` は `rtk` 経由で問題なし。
+> ⚠️ **`rtk` プロキシ環境での注意（常時ルール化）**：`rtk npx prisma db seed` は `tsx prisma/seed.ts` を内部で起動する過程で `No such file or directory (os error 2)` を出すケースがある。**`prisma db seed` は常に `/opt/homebrew/bin/npx prisma db seed` を直接叩く**（rtk 環境かどうかを毎回判断しない／分岐ゼロでデモ事故を防ぐ）。`migrate dev` と `generate` は `rtk` 経由で問題なし。
 
-### `.gitignore` 追記
-```
+### `.gitignore` 追記（コピペ1回で済ます）
+`create-next-app` 生成の `.gitignore` には Prisma 関連がないので、以下を1コマンドで追記する：
+
+```bash
+cat >> .gitignore << 'EOF'
+
+# prisma
 /generated
 /prisma/dev.db
 /prisma/dev.db-journal
+EOF
 ```
 
 ---
@@ -192,6 +198,15 @@ enum Status {
 - バリデーションは最小限（必須チェックのみ、Zod 等は不要）
 - エラーハンドリングは `try/catch` で console.error のみ
 
+### Next.js 16 のキャッシュ対策（必須）
+
+`app/page.tsx` の先頭で **必ず `export const dynamic = "force-dynamic";` を宣言する**。Next.js 16 では Server Action 後の `revalidatePath('/')` だけだとビルド時静的化された場合に反映が安定しない。デモ中に「追加したのに出ない」と詰まる事故を防ぐため、最初から宣言しておく。
+
+```ts
+// app/page.tsx 先頭
+export const dynamic = "force-dynamic";
+```
+
 ### Server → Client 境界の注意（実装時にハマりやすい）
 
 `page.tsx`（Server Component）で取得した Prisma の `Todo[]` をそのまま Client Component へ渡すと、`Date` 型の `dueDate`/`createdAt`/`updatedAt` がシリアライズ境界で型エラー・実行時警告の原因になる。**`page.tsx` 内で必ず以下のように整形してから渡す**：
@@ -257,24 +272,23 @@ const serialized = todos.map((t) => ({
 - サービス：`web` のみ（DBは SQLite ファイルなので不要）
 - ボリューム：`./prisma/dev.db` をホストにマウント（データ永続化）
 - コマンド：起動時に `prisma migrate deploy` → `prisma db seed` → `next dev -H 0.0.0.0`
-- **ポート公開は `${HOST_PORT:-3000}:3000` の形にする**（他プロジェクトのコンテナが 3000 を使っている場合、`HOST_PORT=3001 docker compose up` で回避できるようにするため）
+- **ポート公開は `${HOST_PORT:-3001}:3000` の形にする**（デモ環境では別コンテナが 3000 を握っているケースが多く実測されているため、**デフォルトを 3001 に昇格**。空いていれば `HOST_PORT=3000 docker compose up` で旧来の挙動に戻せる）
 
 ### `.dockerignore`
 最低限：`node_modules`, `.next`, `.git`, `generated`, `README.md`, `HOW.md`, `SPEC.md`
 
 ### 起動コマンド（デモのゴール）
 ```bash
-docker compose up
+HOST_PORT=${HOST_PORT:-3001} docker compose up -d --build
 ```
-ブラウザで `http://localhost:3000` を開くとカンバンが表示され、シードデータ3件が見える。
-ポート競合時は `HOST_PORT=3001 docker compose up` で `http://localhost:3001`。
+ブラウザで `http://localhost:3001` を開くとカンバンが表示され、シードデータ3件が見える。
+3000 を使いたい場合のみ `HOST_PORT=3000 docker compose up`。
 
 ### Docker ボリュームの注意（SQLiteファイルマウント）
 
-`docker-compose.yml` の `volumes:` を **単一ファイル `./prisma/dev.db:/app/prisma/dev.db` でマウントする場合、ホスト側に `dev.db` が存在しないと Docker が「ディレクトリ」として作ってしまい、コンテナ起動時に Prisma が壊れる**。回避策は次のいずれか：
+`docker-compose.yml` の `volumes:` を **単一ファイル `./prisma/dev.db:/app/prisma/dev.db` でマウントする場合、ホスト側に `dev.db` が存在しないと Docker が「ディレクトリ」として作ってしまい、コンテナ起動時に Prisma が壊れる**。
 
-- ホスト側で `npx prisma migrate dev --name init` を先に実行し、`./prisma/dev.db` を作ってから `docker compose up` する（本SPECの想定順序）
-- もしくは `volumes:` を **ディレクトリ単位** `./prisma:/app/prisma` に切り替える（generated は別パスなので衝突しない）。
+**本SPECでは `./prisma:/app/prisma` のディレクトリマウントを推奨**（generated は別パスなので衝突しない）。この方式なら **コンテナ起動時の `prisma migrate deploy` が dev.db を自動生成するため、ホスト側で先に `prisma migrate dev` を流す必要はない**（手順を1ステップ削減）。ホスト側で動作確認したい時のみ手動で migrate を流す。
 
 ### Dockerfile での seed 自動実行
 
@@ -346,11 +360,11 @@ CMD sh -c "npx prisma migrate deploy && npx prisma db seed || true; npm run dev 
    - `.env`（`DATABASE_URL="file:./prisma/dev.db"`）
    - `prisma/seed.ts`（シードデータ3件）
 
-5. **マイグレ → 生成 → シード**（順序重要）：
+5. **マイグレ → 生成 → シード**（順序重要、ホスト側動作確認を兼ねる。ディレクトリマウント方式ならコンテナ起動時にも `migrate deploy` が走るので、最悪この手順を飛ばしても Docker 単独で動く）：
    ```bash
    npx prisma migrate dev --name init
-   npx prisma generate          # 明示実行（必須）
-   npx prisma db seed
+   npx prisma generate                       # 明示実行（必須）
+   /opt/homebrew/bin/npx prisma db seed      # seed は常に絶対パス npx（rtk 回避を常時化）
    ```
 
 6. **アプリコード作成**（順序は何でもよいが、すべて1回で書ききる）：
@@ -367,8 +381,8 @@ CMD sh -c "npx prisma migrate deploy && npx prisma db seed || true; npm run dev 
 
 8. **起動確認**：
    ```bash
-   HOST_PORT=${HOST_PORT:-3000} docker compose up -d --build
-   curl -sS "http://localhost:${HOST_PORT:-3000}/"   # ポート競合時は HOST_PORT=3001 で起動して 3001 を叩く
+   HOST_PORT=${HOST_PORT:-3001} docker compose up -d --build
+   curl -sS "http://localhost:${HOST_PORT:-3001}/"   # デフォルト 3001。3000 を使いたい時のみ HOST_PORT=3000 で
    ```
 
 **各ステップで都度ターミナルへの出力を確認し、エラーが出たら次に進む前に解決すること。**

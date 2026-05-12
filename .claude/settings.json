@@ -27,8 +27,12 @@
       "Bash(command -v rtk)",
       "Bash(kill %1)",
       "Bash(pkill -f \"next dev\")",
+      "Bash(cat >> /Users/takeshiohno/local_dev/mgh-demo/.gitignore *)",
       "Read(//tmp/**)",
       "Read(//private/tmp/**)",
+      "Read(/Users/takeshiohno/local_dev/mgh-demo/**)",
+      "Write(/Users/takeshiohno/local_dev/mgh-demo/**)",
+      "Edit(/Users/takeshiohno/local_dev/mgh-demo/**)",
       "WebFetch(domain:pris.ly)",
       "WebFetch(domain:www.prisma.io)",
       "WebSearch"
