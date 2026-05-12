@@ -21,6 +21,8 @@
       "Bash(ls *)",
       "Bash(grep *)",
       "Bash(sleep *)",
+      "Bash(for *)",
+      "Bash(end=*)",
       "Bash(git *)",
       "Bash(git mv *)",
       "Bash(git -C /Users/takeshiohno/local_dev/mgh-demo remote -v)",

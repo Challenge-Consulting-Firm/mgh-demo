@@ -360,14 +360,14 @@ CMD sh -c "npx prisma migrate deploy && npx prisma db seed || true; npm run dev 
    - `.env`（`DATABASE_URL="file:./prisma/dev.db"`）
    - `prisma/seed.ts`（シードデータ3件）
 
-5. **マイグレ → 生成 → シード**（順序重要、ホスト側動作確認を兼ねる。ディレクトリマウント方式ならコンテナ起動時にも `migrate deploy` が走るので、最悪この手順を飛ばしても Docker 単独で動く）：
+5. **(任意・推奨スキップ) マイグレ → 生成 → シード**：ディレクトリマウント方式ならコンテナ起動時の `migrate deploy` と `db seed` が同等の処理を行うため、**デモではこの手順を丸ごとスキップしてよい**（実測で ~10秒短縮）。ホスト側で動作確認したい場合のみ以下を実行する：
    ```bash
    npx prisma migrate dev --name init
    npx prisma generate                       # 明示実行（必須）
    /opt/homebrew/bin/npx prisma db seed      # seed は常に絶対パス npx（rtk 回避を常時化）
    ```
 
-6. **アプリコード作成**（順序は何でもよいが、すべて1回で書ききる）：
+6. **アプリコード作成**（**【重要】以下すべてを 1 メッセージ内で並列 `Write` 呼び出しでまとめて発行すること**。逐次書き出しは I/O 待ちが累積してデモを 30〜60秒延ばす最大の事故要因）：
    - `lib/prisma.ts`、`lib/status.ts`
    - `app/actions.ts`（Server Actions）
    - `app/page.tsx`（Server Component） — **Prisma の `Date` 型はここで ISO 文字列に変換してから Client へ渡す**（6章「Server → Client 境界の注意」参照）
@@ -384,6 +384,8 @@ CMD sh -c "npx prisma migrate deploy && npx prisma db seed || true; npm run dev 
    HOST_PORT=${HOST_PORT:-3001} docker compose up -d --build
    curl -sS "http://localhost:${HOST_PORT:-3001}/"   # デフォルト 3001。3000 を使いたい時のみ HOST_PORT=3000 で
    ```
+
+   > 💡 **本番デモ前の事前ビルド推奨**：`docker compose build` を **デモ開始前に一度実行しておく** と、本番では Docker レイヤキャッシュが効いて起動が 30〜60秒短縮できる（ネイティブビルド層の再実行が消える）。SPEC や Dockerfile を更新したらキャッシュは無効化されるので、**直前構成での 1 回キャッシュ温め** がコツ。
 
 **各ステップで都度ターミナルへの出力を確認し、エラーが出たら次に進む前に解決すること。**
 
@@ -409,16 +411,22 @@ CMD sh -c "npx prisma migrate deploy && npx prisma db seed || true; npm run dev 
 
 ## 14. 完走時間の目安
 
-リハーサル実績：**初回 約 10 分（5〜10分上限ぎりぎり）**。
-内訳の大きいもの：
+直近実績：**初回 約 4分36秒**（2026-05-13 計測。Docker キャッシュ無し、ホスト側 migrate を実行した条件）。
+内訳：
 
-- `create-next-app` + 依存 install：〜25秒
-- Prisma 7 + better-sqlite3 install（ネイティブビルド）：〜35秒
-- Docker ビルド（コンテナ内で再度ネイティブビルド）：**60〜90秒（最大の支配項）**
-- ファイル書き出し（layout/page/components/actions/lib/seed/config）：**ツール呼び出し回数に比例**
+| 区間 | 所要 |
+|---|---|
+| `create-next-app` | ~22秒 |
+| Prisma 依存インストール（ネイティブビルド含む） | ~30秒 |
+| ファイル書き出し（並列Write 16件） | ~70秒 |
+| Prisma migrate + generate（任意） | ~6秒 |
+| Prisma db seed（任意） | ~5秒 |
+| Docker ビルド＋起動（最大の支配項） | ~95秒 |
+| アプリ応答待ち | ~12秒 |
 
-**時短のコツ**：
+**時短のコツ（効果順）**：
 
-- アプリコードは **1回のメッセージで複数の `Write` を並列実行** すると、I/O 待ちを束ねられる
-- Prisma の `migrate dev` → `generate` → `db seed` は依存があるので逐次でOK
-- Docker ビルドはキャッシュが効くので 2 回目以降は劇的に速い（〜30秒）。デモ前に 1 度 `docker compose build` だけ流しておくと本番で更に短縮できる
+1. **Docker ビルドの事前キャッシュ温め**（最効果、30〜60秒短縮）：デモ直前構成で 1 度 `docker compose build` を実行しておくと、ネイティブビルド層がキャッシュされて本番は劇的に速い。
+2. **アプリコードの並列 Write**（20〜40秒短縮）：12章手順6の通り、すべてのアプリファイルを 1 メッセージで並列に書き出す。逐次書きは事故の元。
+3. **ホスト側 migrate のスキップ**（~10秒短縮）：12章手順5を省略してコンテナ起動時の `migrate deploy` に任せる（ディレクトリマウント前提）。
+4. **Prisma の `migrate dev` → `generate` → `db seed`** は依存関係上、実行する場合は逐次でOK。
