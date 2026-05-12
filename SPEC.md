@@ -101,6 +101,8 @@ npx prisma generate          # ← migrate dev だけでは generated/prisma が
 npx prisma db seed
 ```
 
+> ⚠️ **`rtk` プロキシ環境での注意**：`rtk npx prisma db seed` は `tsx prisma/seed.ts` を内部で起動する過程で `No such file or directory (os error 2)` を出すケースが確認されている。**`prisma db seed` だけは `rtk` を経由せず `/opt/homebrew/bin/npx prisma db seed`（または素の `npx`）で叩くこと**。`migrate dev` と `generate` は `rtk` 経由で問題なし。
+
 ### `.gitignore` 追記
 ```
 /generated
@@ -190,6 +192,22 @@ enum Status {
 - バリデーションは最小限（必須チェックのみ、Zod 等は不要）
 - エラーハンドリングは `try/catch` で console.error のみ
 
+### Server → Client 境界の注意（実装時にハマりやすい）
+
+`page.tsx`（Server Component）で取得した Prisma の `Todo[]` をそのまま Client Component へ渡すと、`Date` 型の `dueDate`/`createdAt`/`updatedAt` がシリアライズ境界で型エラー・実行時警告の原因になる。**`page.tsx` 内で必ず以下のように整形してから渡す**：
+
+```ts
+const serialized = todos.map((t) => ({
+  id: t.id,
+  title: t.title,
+  assignee: t.assignee,
+  content: t.content,
+  status: t.status as Status,
+  dueDate: t.dueDate ? t.dueDate.toISOString() : null,   // ← ISO 文字列化
+}));
+```
+クライアント側で表示する際に `new Date(iso)` → `YYYY-MM-DD` に整形する。
+
 ---
 
 ## 7. プロジェクト構造（目安）
@@ -251,6 +269,21 @@ docker compose up
 ブラウザで `http://localhost:3000` を開くとカンバンが表示され、シードデータ3件が見える。
 ポート競合時は `HOST_PORT=3001 docker compose up` で `http://localhost:3001`。
 
+### Docker ボリュームの注意（SQLiteファイルマウント）
+
+`docker-compose.yml` の `volumes:` を **単一ファイル `./prisma/dev.db:/app/prisma/dev.db` でマウントする場合、ホスト側に `dev.db` が存在しないと Docker が「ディレクトリ」として作ってしまい、コンテナ起動時に Prisma が壊れる**。回避策は次のいずれか：
+
+- ホスト側で `npx prisma migrate dev --name init` を先に実行し、`./prisma/dev.db` を作ってから `docker compose up` する（本SPECの想定順序）
+- もしくは `volumes:` を **ディレクトリ単位** `./prisma:/app/prisma` に切り替える（generated は別パスなので衝突しない）。
+
+### Dockerfile での seed 自動実行
+
+Dockerfile の最終 CMD では `prisma migrate deploy` だけでなく `prisma db seed || true` も併走させると、初回起動時にシードデータが自動投入されて UX が良い（2回目以降は `deleteMany()` で冪等なので問題なし）。SPECサンプル：
+
+```dockerfile
+CMD sh -c "npx prisma migrate deploy && npx prisma db seed || true; npm run dev -- -H 0.0.0.0"
+```
+
 ---
 
 ## 9. シードデータ（`prisma/seed.ts`）
@@ -262,6 +295,10 @@ docker compose up
 | 設計レビューの実施 | 田中 | 2026-05-20 | 未着手 |
 | 構築手順書のドラフト作成 | 佐藤 | 2026-05-15 | 進行中 |
 | キックオフMTGの議事録 | 鈴木 | 2026-05-08 | 完了 |
+
+> 💡 **タイムゾーン対策**：`new Date("2026-05-20")` のように日付のみ文字列を渡すと JST 環境で UTC 解釈され、表示が 1 日ズレることがある。シードでは `new Date("2026-05-20T00:00:00Z")` のように **明示的 UTC** で書くか、表示側で `toISOString().slice(0,10)` を使う等で揃えること。
+
+> 💡 **冪等性**：`seed.ts` の冒頭で `await prisma.todo.deleteMany()` を呼んでおくと、再シード時の重複登録を防げる。Docker の `CMD` から `prisma db seed` を毎回流す構成と相性が良い。
 
 ---
 
@@ -319,17 +356,55 @@ docker compose up
 6. **アプリコード作成**（順序は何でもよいが、すべて1回で書ききる）：
    - `lib/prisma.ts`、`lib/status.ts`
    - `app/actions.ts`（Server Actions）
-   - `app/page.tsx`（Server Component）
+   - `app/page.tsx`（Server Component） — **Prisma の `Date` 型はここで ISO 文字列に変換してから Client へ渡す**（6章「Server → Client 境界の注意」参照）
    - `app/components/{KanbanBoard,TodoCard,NewTodoModal}.tsx`
    - `app/layout.tsx`（lang="ja"、`bg-slate-50 text-slate-900` を body に明示）
    - `app/globals.css` から `@media (prefers-color-scheme: dark)` ブロックを **削除**（5章「配色」参照）
+
+   > ⚠️ **`create-next-app` は `app/page.tsx`・`app/layout.tsx`・`app/globals.css` を既定で生成済み**。これらは「躊躇なく完全上書き」で良い。Write ツールで上書きする際は事前に Read が必要なため、Read→Write を一括で出すと時短になる。
 
 7. **Docker 構成作成**：`Dockerfile`（`apk add python3 make g++ libc6-compat` を含む）、`docker-compose.yml`（`HOST_PORT` 環境変数化）、`.dockerignore`。
 
 8. **起動確認**：
    ```bash
-   docker compose up -d --build
-   curl -sS http://localhost:3000/   # ポート競合時は HOST_PORT=3001 で起動して 3001 を叩く
+   HOST_PORT=${HOST_PORT:-3000} docker compose up -d --build
+   curl -sS "http://localhost:${HOST_PORT:-3000}/"   # ポート競合時は HOST_PORT=3001 で起動して 3001 を叩く
    ```
 
 **各ステップで都度ターミナルへの出力を確認し、エラーが出たら次に進む前に解決すること。**
+
+---
+
+## 13. 既知のハマりどころ（過去デモからのフィードバック）
+
+過去のリハーサル/本番デモで実際に詰まった項目。**実装前に必ず一読すること**。
+
+| # | 症状 | 原因 | 対策 |
+|---|---|---|---|
+| 1 | `npm install` でビルドエラー（`node-gyp` failed） | `better-sqlite3` がネイティブビルドを要求 | Dockerfile に `apk add --no-cache python3 make g++ libc6-compat`（8章のとおり）。ホスト側は Xcode CLT 必要。 |
+| 2 | `prisma migrate dev` が `Environment variable not found: DATABASE_URL` で失敗 | Prisma 7 では `schema.prisma` の datasource 内に `url` を書けず、`prisma.config.ts` 経由 | 「2.1」のとおり `.env` + `prisma.config.ts` を最初から書く |
+| 3 | `lib/prisma.ts` で `PrismaClient is not a constructor` | `@prisma/client` から import している | 生成先 `@/generated/prisma/client` から import する（「2.1」のとおり） |
+| 4 | コンテナ起動はするが 500 エラー、ログに `Error: Cannot find module '../generated/prisma/client'` | Dockerfile で `npx prisma generate` を忘れている、または `.dockerignore` で `generated` を除外している | Dockerfile に `RUN npx prisma generate` を入れ、`.dockerignore` の `generated` 除外は **ビルド時生成するので残してOK**（ただし手元で生成済みのものを COPY したい場合は外す） |
+| 5 | カードに渡した `dueDate` で型エラー or 1日ズレ | Server→Client 境界で `Date` 型を渡している/タイムゾーン未指定 | 6章「Server → Client 境界の注意」「9章 タイムゾーン対策」のとおり ISO 文字列で渡す |
+| 6 | OS のダークモード設定でモーダル文字が見えない | デフォルトの `@media (prefers-color-scheme: dark)` が残っている | 5章「配色」のとおり `app/globals.css` から該当ブロックを削除し、`bg-white text-slate-900` を明示 |
+| 7 | `rtk npx prisma db seed` が `No such file or directory` | rtk プロキシ環境特有 | `/opt/homebrew/bin/npx prisma db seed` を直接叩く（「2.1」末尾の注意参照） |
+| 8 | `docker compose up` がポート競合で失敗 | 他コンテナが 3000 を占有 | `HOST_PORT=3001 docker compose up`（8章のとおり） |
+| 9 | `volumes: ./prisma/dev.db:/app/prisma/dev.db` がディレクトリとして作られる | マウント元のホスト側ファイルが未作成 | ホスト側で先に `prisma migrate dev` を流して `dev.db` を作成、または `./prisma:/app/prisma` のディレクトリマウントに変更（8章参照） |
+
+---
+
+## 14. 完走時間の目安
+
+リハーサル実績：**初回 約 10 分（5〜10分上限ぎりぎり）**。
+内訳の大きいもの：
+
+- `create-next-app` + 依存 install：〜25秒
+- Prisma 7 + better-sqlite3 install（ネイティブビルド）：〜35秒
+- Docker ビルド（コンテナ内で再度ネイティブビルド）：**60〜90秒（最大の支配項）**
+- ファイル書き出し（layout/page/components/actions/lib/seed/config）：**ツール呼び出し回数に比例**
+
+**時短のコツ**：
+
+- アプリコードは **1回のメッセージで複数の `Write` を並列実行** すると、I/O 待ちを束ねられる
+- Prisma の `migrate dev` → `generate` → `db seed` は依存があるので逐次でOK
+- Docker ビルドはキャッシュが効くので 2 回目以降は劇的に速い（〜30秒）。デモ前に 1 度 `docker compose build` だけ流しておくと本番で更に短縮できる
